@@ -28,7 +28,6 @@ The project must compile with `make` and produce a single binary.
 ## Operations
 Each worker repeatedly performs operations until:
 - `--requests` total operations have completed globally, OR
-- `--duration` time limit elapses (if duration > 0), whichever is configured.
 
 ### Write Operation
 - Choose a key (see Key Selection).
@@ -49,8 +48,8 @@ Each worker repeatedly performs operations until:
 - Count latency and success.
 
 ### Read/Write Mix
-- A configurable `--write-ratio` in [0.0, 1.0] determines probability of write.
-- Read probability is `1 - write_ratio`.
+- A configurable `--run` ratio in `W:R` determines probability of write.
+- Read probability is `R / (W + R)`.
 
 ## Key Selection
 - Configurable number of keys: `--keys`.
@@ -75,21 +74,18 @@ Command-line flags (minimum):
 - `--client` default 8
 - `--keys` default 10000
 - `--load` load data only (writes only)
-- If `--load` is set and `--duration` is not provided, the benchmark writes each key once and stops after `--keys` keys (across all threads).
-- If `--load` is set and `--duration` is provided, the benchmark first writes each key once, then cycles through the same `--keys` keyspace for the full duration.
+- If `--load` is set, the benchmark writes each key once and stops after `--keys` keys (across all threads).
 - `--run` run mode ratio in `W:R` (uses `HSET` writes and `HGETALL` reads across the `--keys` keyspace)
 - `--cluster` enable Redis Cluster mode
 - `--value-bytes` default 16 (must allow 16, but keep configurable)
-- `--write-ratio` default 0.5
-- `--requests` total ops, default 0 (meaning disabled if duration is set)
-- `--duration` benchmark duration (e.g. `10s`), default `10s`
+- `--run` default `1:1`
+- `--requests` total ops, default 0
 - `--pipeline` optional integer pipeline depth, default 1
 - `--seed` random seed (0 means time-based)
 - `--report-interval` default `5s`
 - `--json` output JSON summary in addition to human text
 
 Behavior rules:
-- If both `requests` and `duration` are set (>0), stop when either condition is met.
 - Validate: value_bytes >= 1.
 - Print config at start.
 

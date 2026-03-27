@@ -29,7 +29,6 @@ Use pure Go build with a Makefile that works on macOS and Linux.
 ## Concurrency Model
 - Use a global context with cancel.
 - Stop conditions:
-  - duration timer -> cancel
   - requests counter reaches limit -> cancel
 - Use `sync/atomic` to count completed ops globally.
 - Workers:
@@ -118,8 +117,6 @@ Add tests for:
 - write_ratio in [0,1]
 - threads, conns, keys > 0
 - value_bytes == 16 by default but can be changed
-- duration parsing
-- requests/duration stop logic sanity
 
 ## Error Handling
 - Count errors; include last error string in final report (store atomically with a mutex or `atomic.Value`).

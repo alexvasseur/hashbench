@@ -34,11 +34,9 @@ func main() {
 	flag.IntVar(&cfg.Clients, "client", config.DefaultClients, "Redis connection pool size")
 	flag.IntVar(&cfg.Keys, "keys", config.DefaultKeys, "Number of keys")
 	flag.IntVar(&cfg.ValueBytes, "value-bytes", config.DefaultValueBytes, "Value size in bytes")
-	flag.Float64Var(&cfg.WriteRatio, "write-ratio", config.DefaultWriteRatio, "Write ratio (0..1)")
 	flag.BoolVar(&cfg.LoadOnly, "load", false, "Load data only (writes only)")
-	flag.StringVar(&cfg.RunRatio, "run", "", "Run mode write:read ratio, e.g. 3:7 (uses HGETALL)")
+	flag.StringVar(&cfg.RunRatio, "run", "1:1", "Run mode write:read ratio, e.g. 3:7 (uses HGETALL)")
 	flag.Uint64Var(&cfg.Requests, "requests", config.DefaultRequests, "Total requests to execute (0 = disabled)")
-	flag.DurationVar(&cfg.Duration, "duration", config.DefaultDuration, "Benchmark duration")
 	flag.IntVar(&cfg.Pipeline, "pipeline", config.DefaultPipeline, "Pipeline depth")
 	flag.Int64Var(&cfg.Seed, "seed", config.DefaultSeed, "Random seed (0 = time-based)")
 	flag.DurationVar(&cfg.ReportInterval, "report-interval", config.DefaultReportInterval, "Reporting interval")
@@ -46,36 +44,30 @@ func main() {
 	flag.BoolVar(&cfg.JSON, "json", false, "Output JSON summary")
 	flag.Parse()
 
-	durationProvided := hasFlag("duration")
-
 	if cfg.Seed == 0 {
 		cfg.Seed = time.Now().UnixNano()
 	}
 
-	if cfg.LoadOnly && cfg.RunRatio != "" {
+	if cfg.LoadOnly && hasFlag("run") {
 		fmt.Fprintln(os.Stderr, "config error: --load and --run are mutually exclusive")
 		os.Exit(1)
 	}
 
 	runMode := false
 	loadOnce := false
-	loadCycle := false
+	writeRatio := 0.5
 	if cfg.RunRatio != "" {
 		ratio, err := parseRunRatio(cfg.RunRatio)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 			os.Exit(1)
 		}
-		cfg.WriteRatio = ratio
+		writeRatio = ratio
 		runMode = true
 	}
 	if cfg.LoadOnly {
-		cfg.WriteRatio = 1.0
-		if !durationProvided || cfg.Duration == 0 {
-			loadOnce = true
-		} else {
-			loadCycle = true
-		}
+		writeRatio = 1.0
+		loadOnce = true
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -86,8 +78,8 @@ func main() {
 	fmt.Printf("Redis Hash Bench\n")
 	totalWorkers := cfg.Threads * cfg.Clients
 	fmt.Printf("addr=%s db=%d tls=%v threads=%d client=%d total-workers=%d keys=%d\n", cfg.Addr, cfg.DB, cfg.TLS, cfg.Threads, cfg.Clients, totalWorkers, cfg.Keys)
-	fmt.Printf("value-bytes=%d write-ratio=%.2f load=%v run=%v\n", cfg.ValueBytes, cfg.WriteRatio, cfg.LoadOnly, runMode)
-	fmt.Printf("requests=%d duration=%s pipeline=%d seed=%d key-pattern=%s\n", cfg.Requests, cfg.Duration, cfg.Pipeline, cfg.Seed, cfg.KeyPattern)
+	fmt.Printf("value-bytes=%d write-ratio=%.2f load=%v run=%v\n", cfg.ValueBytes, writeRatio, cfg.LoadOnly, runMode)
+	fmt.Printf("requests=%d pipeline=%d seed=%d key-pattern=%s\n", cfg.Requests, cfg.Pipeline, cfg.Seed, cfg.KeyPattern)
 
 	clients := make([]redis.UniversalClient, 0, cfg.Clients)
 	if cfg.Cluster {
@@ -136,36 +128,27 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if cfg.Duration > 0 {
-		go func() {
-			timer := time.NewTimer(cfg.Duration)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				cancel()
-			}
-		}()
-	}
-
 	m := metrics.New(200000, 65536)
 	start := time.Now()
 
 	if cfg.ReportInterval > 0 {
-		go m.RunReporter(ctx, cfg.ReportInterval, func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec float64) {
+		go m.RunReporter(ctx, cfg.ReportInterval, func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec, errSec, avgMs, p95Ms, p99Ms float64, errorsMsg []string) {
 			uptime := int(time.Since(start).Seconds())
 			opsInt := int64(math.Round(opsSec))
 			readInt := int64(math.Round(readOpsSec))
 			writeInt := int64(math.Round(writeOpsSec))
-			errsSec := int64(math.Round(float64(errors) / cfg.ReportInterval.Seconds()))
-			fmt.Printf("[%03d s]\t%8d ops/s\t%8d read/s\t%8d write/s\t%6d errors/s\n", uptime, opsInt, readInt, writeInt, errsSec)
+			errsInt := int64(math.Round(errSec))
+			fmt.Printf("[%03d s]\t%8d ops/s\t%8d read/s\t%8d write/s\t%6d errors/s\t%7.2f ms avg\t%7.2f ms p95\t%7.2f ms p99\n", uptime, opsInt, readInt, writeInt, errsInt, avgMs, p95Ms, p99Ms)
+			for _, msg := range errorsMsg {
+				fmt.Fprintf(os.Stderr, "[%03d s] %s\n", uptime, msg)
+			}
 		})
 	}
 
 	var completed uint64
 	var cancelOnce sync.Once
 	var nextLoadIdx uint64
+	var loadDone uint32
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
@@ -177,7 +160,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			rng := workload.NewRNG(cfg.Seed, workerID)
-			gen := workload.NewGenerator(cfg.Keys, cfg.ValueBytes, cfg.WriteRatio, cfg.KeyPattern, rng)
+			gen := workload.NewGenerator(cfg.Keys, cfg.ValueBytes, writeRatio, cfg.KeyPattern, rng)
 			for {
 				select {
 				case <-ctx.Done():
@@ -195,13 +178,13 @@ func main() {
 					if loadOnce {
 						idx := int(atomic.AddUint64(&nextLoadIdx, 1) - 1)
 						if idx >= cfg.Keys {
+							if atomic.CompareAndSwapUint32(&loadDone, 0, 1) {
+								uptime := int(time.Since(start).Seconds())
+								fmt.Printf("[%03d s] load complete: keys=%d\n", uptime, cfg.Keys)
+							}
 							cancelOnce.Do(cancel)
 							continue
 						}
-						n = workload.FieldCountForIndex(idx)
-						key = workload.KeyForIndex(n, idx)
-					} else if loadCycle {
-						idx := int((atomic.AddUint64(&nextLoadIdx, 1) - 1) % uint64(cfg.Keys))
 						n = workload.FieldCountForIndex(idx)
 						key = workload.KeyForIndex(n, idx)
 					} else {
@@ -248,13 +231,13 @@ func main() {
 						if loadOnce {
 							idx := int(atomic.AddUint64(&nextLoadIdx, 1) - 1)
 							if idx >= cfg.Keys {
+								if atomic.CompareAndSwapUint32(&loadDone, 0, 1) {
+									uptime := int(time.Since(start).Seconds())
+									fmt.Printf("[%03d s] load complete: keys=%d\n", uptime, cfg.Keys)
+								}
 								cancelOnce.Do(cancel)
 								break
 							}
-							counts[j] = workload.FieldCountForIndex(idx)
-							keys[j] = workload.KeyForIndex(counts[j], idx)
-						} else if loadCycle {
-							idx := int((atomic.AddUint64(&nextLoadIdx, 1) - 1) % uint64(cfg.Keys))
 							counts[j] = workload.FieldCountForIndex(idx)
 							keys[j] = workload.KeyForIndex(counts[j], idx)
 						} else {
@@ -322,10 +305,10 @@ func main() {
 
 	fmt.Printf("\nSummary\n")
 	fmt.Printf("elapsed=%s total=%d errors=%d error-rate=%.4f\n", elapsed, summary.Count, summary.Errors, summary.ErrorRate)
-	fmt.Printf("throughput ops/s=%.1f read/s=%.1f write/s=%.1f\n", summary.OpsPerSec, summary.ReadOpsSec, summary.WriteOpsSec)
-	fmt.Printf("latency_ms overall p50=%.3f p90=%.3f p95=%.3f p99=%.3f p99.9=%.3f\n", summary.Overall.P50, summary.Overall.P90, summary.Overall.P95, summary.Overall.P99, summary.Overall.P999)
-	fmt.Printf("latency_ms read    p50=%.3f p90=%.3f p95=%.3f p99=%.3f p99.9=%.3f\n", summary.Read.P50, summary.Read.P90, summary.Read.P95, summary.Read.P99, summary.Read.P999)
-	fmt.Printf("latency_ms write   p50=%.3f p90=%.3f p95=%.3f p99=%.3f p99.9=%.3f\n", summary.Write.P50, summary.Write.P90, summary.Write.P95, summary.Write.P99, summary.Write.P999)
+	fmt.Printf("throughput	%.0f ops/s			%.0f read/s			%.0f write/s\n", summary.OpsPerSec, summary.ReadOpsSec, summary.WriteOpsSec)
+	fmt.Printf("overall		p50=%.3f 	%.3f p90	%.3f p95	%.3f p99	%.3f p99.9\n", summary.Overall.P50, summary.Overall.P90, summary.Overall.P95, summary.Overall.P99, summary.Overall.P999)
+	fmt.Printf("read    	p50=%.3f 	%.3f p90	%.3f p95	%.3f p99	%.3f p99.9\n", summary.Read.P50, summary.Read.P90, summary.Read.P95, summary.Read.P99, summary.Read.P999)
+	fmt.Printf("write   	p50=%.3f 	%.3f p90	%.3f p95	%.3f p99	%.3f p99.9\n", summary.Write.P50, summary.Write.P90, summary.Write.P95, summary.Write.P99, summary.Write.P999)
 	if summary.LastError != "" {
 		fmt.Printf("last_error=%s\n", summary.LastError)
 	}

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"sync"
@@ -97,10 +98,15 @@ type Metrics struct {
 	errors   uint64
 
 	lastErr atomic.Value
+	errCh   chan string
 
 	overall *latencyCollector
 	read    *latencyCollector
 	write   *latencyCollector
+
+	intervalMu      sync.Mutex
+	intervalSamples []time.Duration
+	intervalCap     int
 }
 
 func New(sampleCap int, chBuffer int) *Metrics {
@@ -111,10 +117,12 @@ func New(sampleCap int, chBuffer int) *Metrics {
 		chBuffer = 65536
 	}
 	m := &Metrics{
-		latencyCh: make(chan latencyEvent, chBuffer),
-		overall:   newLatencyCollector(sampleCap),
-		read:      newLatencyCollector(sampleCap),
-		write:     newLatencyCollector(sampleCap),
+		latencyCh:   make(chan latencyEvent, chBuffer),
+		errCh:       make(chan string, chBuffer),
+		overall:     newLatencyCollector(sampleCap),
+		read:        newLatencyCollector(sampleCap),
+		write:       newLatencyCollector(sampleCap),
+		intervalCap: 100000,
 	}
 	m.lastErr.Store("")
 	m.wg.Add(1)
@@ -132,11 +140,21 @@ func (m *Metrics) runAggregator() {
 		case OpWrite:
 			m.write.add(ev.d)
 		}
+		m.addInterval(ev.d)
 	}
+}
+
+func (m *Metrics) addInterval(d time.Duration) {
+	m.intervalMu.Lock()
+	if len(m.intervalSamples) < m.intervalCap {
+		m.intervalSamples = append(m.intervalSamples, d)
+	}
+	m.intervalMu.Unlock()
 }
 
 func (m *Metrics) Close() {
 	close(m.latencyCh)
+	close(m.errCh)
 	m.wg.Wait()
 }
 
@@ -148,9 +166,13 @@ func (m *Metrics) Record(op OpType, latency time.Duration, err error) {
 	case OpWrite:
 		atomic.AddUint64(&m.writeOps, 1)
 	}
-	if err != nil {
+	if err != nil && !isIgnorable(err) {
 		atomic.AddUint64(&m.errors, 1)
 		m.lastErr.Store(err.Error())
+		select {
+		case m.errCh <- err.Error():
+		default:
+		}
 	}
 	select {
 	case m.latencyCh <- latencyEvent{op: op, d: latency}:
@@ -168,7 +190,7 @@ func (m *Metrics) Snapshot() (total, read, write, errors uint64, lastErr string)
 	return
 }
 
-func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, report func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec float64)) {
+func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, report func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec, errSec float64, avgMs, p95Ms, p99Ms float64, errorsMsg []string)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var lastTotal, lastRead, lastWrite, lastErrors uint64
@@ -187,7 +209,10 @@ func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, repor
 			opsSec := float64(total-lastTotal) / dt
 			readOpsSec := float64(read-lastRead) / dt
 			writeOpsSec := float64(write-lastWrite) / dt
-			report(total, read, write, errors, opsSec, readOpsSec, writeOpsSec)
+			errSec := float64(errors-lastErrors) / dt
+			avgMs, p95Ms, p99Ms := m.intervalStats()
+			errorsMsg := m.drainErrors()
+			report(total, read, write, errors, opsSec, readOpsSec, writeOpsSec, errSec, avgMs, p95Ms, p99Ms, errorsMsg)
 			lastTotal = total
 			lastRead = read
 			lastWrite = write
@@ -196,6 +221,40 @@ func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, repor
 			lastTime = now
 		}
 	}
+}
+
+func (m *Metrics) intervalStats() (avgMs, p95Ms, p99Ms float64) {
+	m.intervalMu.Lock()
+	samples := m.intervalSamples
+	m.intervalSamples = nil
+	m.intervalMu.Unlock()
+
+	if len(samples) == 0 {
+		return 0, 0, 0
+	}
+	sum := 0.0
+	for _, d := range samples {
+		sum += ms(d)
+	}
+	avgMs = sum / float64(len(samples))
+	p := computePercentiles(samples)
+	return avgMs, p.P95, p.P99
+}
+
+func (m *Metrics) drainErrors() []string {
+	var out []string
+	for {
+		select {
+		case msg := <-m.errCh:
+			out = append(out, msg)
+		default:
+			return out
+		}
+	}
+}
+
+func isIgnorable(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 func (m *Metrics) FinalSummary(elapsed time.Duration) Summary {
