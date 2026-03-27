@@ -103,7 +103,10 @@ The tool prints a periodic throughput report and a final summary including:
 - Ops/sec overall, read, write
 - Latency percentiles overall, read, write (p50/p90/p95/p99/p99.9)
 
-## Large scale testing
+## Example 100 million keys testing
+
+The below example is with 100 millions keys.
+This is by default ~36GB of primary data (unless using a different `--value-bytes`) so fundamentally not that large but can help have enough data to distribute across many shards or nodes.
 
 Connection setup
 ```
@@ -128,7 +131,7 @@ Read only example (no pipeline)
 --keys 100000000 --key-pattern sequential \
 --cluster 
 
-(example output with Redis Flex on C4 with 20% RAM/SSD)
+(example output with Redis Flex on C4 with 20% RAM/SSD -- your number may be different and those numbers don't reflect any valid performance outcome or best result possible and are for illustration purpose only).
 ...
 elapsed=39m33.608381475s total=537888091 errors=0 error-rate=0.0000
 throughput	226612 ops/s			226612 read/s			0 write/s
