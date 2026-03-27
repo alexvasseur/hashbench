@@ -140,3 +140,14 @@ overall		p50=0.561 	0.929 p90	1.189 p95	3.494 p99	5.601 p99.9
 read    	p50=0.560 	0.924 p90	1.174 p95	3.486 p99	5.536 p99.9
 write   	p50=0.000 	0.000 p90	0.000 p95	0.000 p99	0.000 p99.9
 ```
+
+For a read only example with rate limiting
+```
+./bin/hashbench $RH \
+--threads 20 --client 50 \
+--run 0:3 \
+--keys 100000000 --key-pattern sequential \
+--cluster \
+--qps 100000
+```
+

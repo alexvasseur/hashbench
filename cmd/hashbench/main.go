@@ -23,6 +23,8 @@ import (
 	"hashbench/internal/workload"
 )
 
+const Version = "1.1.0"
+
 func main() {
 	cfg := config.Config{}
 	flag.StringVar(&cfg.Addr, "addr", config.DefaultAddr, "Redis address")
@@ -76,7 +78,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Redis Hash Bench\n")
+	fmt.Printf("Redis Hash Bench %s\n", Version)
 	totalWorkers := cfg.Threads * cfg.Clients
 	fmt.Printf("addr=%s db=%d tls=%v threads=%d client=%d total-workers=%d keys=%d\n", cfg.Addr, cfg.DB, cfg.TLS, cfg.Threads, cfg.Clients, totalWorkers, cfg.Keys)
 	fmt.Printf("value-bytes=%d write-ratio=%.2f load=%v run=%v\n", cfg.ValueBytes, writeRatio, cfg.LoadOnly, runMode)
