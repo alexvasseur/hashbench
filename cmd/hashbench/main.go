@@ -37,6 +37,7 @@ func main() {
 	flag.BoolVar(&cfg.LoadOnly, "load", false, "Load data only (writes only)")
 	flag.StringVar(&cfg.RunRatio, "run", "1:1", "Run mode write:read ratio, e.g. 3:7 (uses HGETALL)")
 	flag.Uint64Var(&cfg.Requests, "requests", config.DefaultRequests, "Total requests to execute (0 = disabled)")
+	flag.IntVar(&cfg.QPS, "qps", config.DefaultQPS, "Global ops/sec limit (divided per client, 0 = unlimited)")
 	flag.IntVar(&cfg.Pipeline, "pipeline", config.DefaultPipeline, "Pipeline depth")
 	flag.Int64Var(&cfg.Seed, "seed", config.DefaultSeed, "Random seed (0 = time-based)")
 	flag.DurationVar(&cfg.ReportInterval, "report-interval", config.DefaultReportInterval, "Reporting interval")
@@ -79,7 +80,10 @@ func main() {
 	totalWorkers := cfg.Threads * cfg.Clients
 	fmt.Printf("addr=%s db=%d tls=%v threads=%d client=%d total-workers=%d keys=%d\n", cfg.Addr, cfg.DB, cfg.TLS, cfg.Threads, cfg.Clients, totalWorkers, cfg.Keys)
 	fmt.Printf("value-bytes=%d write-ratio=%.2f load=%v run=%v\n", cfg.ValueBytes, writeRatio, cfg.LoadOnly, runMode)
-	fmt.Printf("requests=%d pipeline=%d seed=%d key-pattern=%s\n", cfg.Requests, cfg.Pipeline, cfg.Seed, cfg.KeyPattern)
+	fmt.Printf("requests=%d qps=%d pipeline=%d seed=%d key-pattern=%s\n", cfg.Requests, cfg.QPS, cfg.Pipeline, cfg.Seed, cfg.KeyPattern)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	clients := make([]redis.UniversalClient, 0, cfg.Clients)
 	if cfg.Cluster {
@@ -125,9 +129,6 @@ func main() {
 		}
 	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	m := metrics.New(200000, 65536)
 	start := time.Now()
 
@@ -149,6 +150,16 @@ func main() {
 	var cancelOnce sync.Once
 	var nextLoadIdx uint64
 	var loadDone uint32
+
+	var perClientQPS float64
+	if cfg.QPS > 0 {
+		perClientQPS = float64(cfg.QPS) / float64(cfg.Clients)
+	}
+	nextSlots := make([]int64, cfg.Clients)
+	nowNs := time.Now().UnixNano()
+	for i := 0; i < cfg.Clients; i++ {
+		nextSlots[i] = nowNs
+	}
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
@@ -156,7 +167,8 @@ func main() {
 	wg.Add(totalWorkers)
 	for i := 0; i < totalWorkers; i++ {
 		workerID := i
-		client := clients[workerID%cfg.Clients]
+		clientIdx := workerID % cfg.Clients
+		client := clients[clientIdx]
 		go func() {
 			defer wg.Done()
 			rng := workload.NewRNG(cfg.Seed, workerID)
@@ -169,6 +181,9 @@ func main() {
 				}
 				delta := uint64(1)
 				if cfg.Pipeline <= 1 {
+					if !pace(ctx, perClientQPS, &nextSlots[clientIdx]) {
+						return
+					}
 					op := gen.NextOpType()
 					if cfg.LoadOnly {
 						op = workload.OpWrite
@@ -192,19 +207,21 @@ func main() {
 						n = workload.FieldCountForIndex(idx)
 						key = workload.KeyForIndex(n, idx)
 					}
-					startOp := time.Now()
 					var err error
 					switch op {
 					case workload.OpWrite:
 						args := gen.HSetArgs(n)
+						startOp := time.Now()
 						err = client.HSet(ctx, key, args...).Err()
 						m.Record(metrics.OpWrite, time.Since(startOp), err)
 					case workload.OpRead:
 						if runMode {
+							startOp := time.Now()
 							_, err = client.HGetAll(ctx, key).Result()
 							m.Record(metrics.OpRead, time.Since(startOp), err)
 						} else {
 							fields := gen.Fields(n)
+							startOp := time.Now()
 							res, rerr := client.HMGet(ctx, key, fields...).Result()
 							if rerr != nil {
 								err = rerr
@@ -223,6 +240,9 @@ func main() {
 					args := make([][]interface{}, depth)
 					actual := 0
 					for j := 0; j < depth; j++ {
+						if !pace(ctx, perClientQPS, &nextSlots[clientIdx]) {
+							return
+						}
 						opTypes[j] = gen.NextOpType()
 						if cfg.LoadOnly {
 							opTypes[j] = workload.OpWrite
@@ -259,7 +279,6 @@ func main() {
 					}
 					depth = actual
 					delta = uint64(depth)
-					startOp := time.Now()
 					pipe := client.Pipeline()
 					for j := 0; j < depth; j++ {
 						if opTypes[j] == workload.OpWrite {
@@ -272,6 +291,7 @@ func main() {
 							}
 						}
 					}
+					startOp := time.Now()
 					_, err := pipe.Exec(ctx)
 					lat := time.Since(startOp)
 					per := lat / time.Duration(depth)
@@ -363,4 +383,26 @@ func splitAddrs(addr string) []string {
 		return []string{addr}
 	}
 	return addrs
+}
+
+func pace(ctx context.Context, rate float64, next *int64) bool {
+	if rate <= 0 {
+		return true
+	}
+	interval := int64(float64(time.Second) / rate)
+	if interval < int64(time.Microsecond) {
+		interval = int64(time.Microsecond)
+	}
+	slot := atomic.AddInt64(next, interval)
+	now := time.Now().UnixNano()
+	if slot > now {
+		timer := time.NewTimer(time.Duration(slot - now))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+	return true
 }

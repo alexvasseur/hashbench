@@ -76,6 +76,7 @@ Command-line flags (minimum):
 - `--load` load data only (writes only)
 - If `--load` is set, the benchmark writes each key once and stops after `--keys` keys (across all threads).
 - `--run` run mode ratio in `W:R` (uses `HSET` writes and `HGETALL` reads across the `--keys` keyspace)
+- `--qps` global ops/sec limit (divided evenly per client, 0 disables)
 - `--cluster` enable Redis Cluster mode
 - `--value-bytes` default 16 (must allow 16, but keep configurable)
 - `--run` default `1:1`

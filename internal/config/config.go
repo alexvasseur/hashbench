@@ -12,6 +12,7 @@ const (
 	DefaultKeys                  = 10000
 	DefaultValueBytes            = 16
 	DefaultRequests       uint64 = 0
+	DefaultQPS                   = 0
 	DefaultPipeline              = 1
 	DefaultSeed           int64  = 0
 	DefaultReportInterval        = 5 * time.Second
@@ -32,6 +33,7 @@ type Config struct {
 	LoadOnly       bool
 	RunRatio       string
 	Requests       uint64
+	QPS            int
 	Pipeline       int
 	Seed           int64
 	ReportInterval time.Duration
@@ -51,6 +53,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ValueBytes <= 0 {
 		return errors.New("value-bytes must be >= 1")
+	}
+	if c.QPS < 0 {
+		return errors.New("qps must be >= 0")
 	}
 	if c.Pipeline <= 0 {
 		return errors.New("pipeline must be >= 1")

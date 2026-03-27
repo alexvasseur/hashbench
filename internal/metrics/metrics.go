@@ -41,6 +41,7 @@ type Summary struct {
 type latencyEvent struct {
 	op OpType
 	d  time.Duration
+	in bool
 }
 
 type latencyCollector struct {
@@ -107,6 +108,9 @@ type Metrics struct {
 	intervalMu      sync.Mutex
 	intervalSamples []time.Duration
 	intervalCap     int
+
+	start  time.Time
+	warmup time.Duration
 }
 
 func New(sampleCap int, chBuffer int) *Metrics {
@@ -123,6 +127,8 @@ func New(sampleCap int, chBuffer int) *Metrics {
 		read:        newLatencyCollector(sampleCap),
 		write:       newLatencyCollector(sampleCap),
 		intervalCap: 100000,
+		start:       time.Now(),
+		warmup:      10 * time.Second,
 	}
 	m.lastErr.Store("")
 	m.wg.Add(1)
@@ -133,12 +139,14 @@ func New(sampleCap int, chBuffer int) *Metrics {
 func (m *Metrics) runAggregator() {
 	defer m.wg.Done()
 	for ev := range m.latencyCh {
-		m.overall.add(ev.d)
-		switch ev.op {
-		case OpRead:
-			m.read.add(ev.d)
-		case OpWrite:
-			m.write.add(ev.d)
+		if ev.in {
+			m.overall.add(ev.d)
+			switch ev.op {
+			case OpRead:
+				m.read.add(ev.d)
+			case OpWrite:
+				m.write.add(ev.d)
+			}
 		}
 		m.addInterval(ev.d)
 	}
@@ -175,7 +183,7 @@ func (m *Metrics) Record(op OpType, latency time.Duration, err error) {
 		}
 	}
 	select {
-	case m.latencyCh <- latencyEvent{op: op, d: latency}:
+	case m.latencyCh <- latencyEvent{op: op, d: latency, in: time.Since(m.start) >= m.warmup}:
 	default:
 		// drop sample if channel is full
 	}
