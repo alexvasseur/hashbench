@@ -120,3 +120,8 @@ Allowed:
 - Cluster slot-aware routing (optional)
 - Lua scripting (not required)
 - Keyspace preloading (optional)
+
+## Java Lettuce Client
+- The `lettuce` Java client is refactored to match the Go `--run` behavior and options.
+- Supported options mirror Go `--run` (addr/password/tls/cluster/threads/client/keys/value-bytes/run/requests/pipeline/seed/report-interval/key-pattern/qps).
+- `--load` is intentionally not supported in the Java client.

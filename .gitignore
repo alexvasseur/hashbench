@@ -1,1 +1,4 @@
 bin/*
+lettuce/target/*
+*/.vscode/*
+.DS_Store

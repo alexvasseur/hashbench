@@ -1,6 +1,15 @@
-# Redis Hash Bench (Go)
+# Redis Hash Bench (Go & Java Lettuce)
 
-A Go CLI benchmark tool for Redis Hash read/write workloads with configurable concurrency, key count, field counts, and read/write mix.
+A Go CLI benchmark tool for Redis Hash read/write workloads with configurable concurrency, key count, field size, and read/write mix, cluster mode and rate limiting.
+
+A compatible Java Lettuce benchmark tool using the same CLI options and same data structures.
+
+Each Redis key/value hash uses a weighted field count distribution:
+- 35%: 5 fields (about 350 bytes per key)
+- 50%: 10 fields
+- 10%: 20 fields
+- 5%: 100 fields (about 6kB per key)
+
 
 ## Build
 
@@ -53,14 +62,14 @@ bin/hashbench
 ./bin/hashbench --addr 127.0.0.1:6379 --threads 16 --client 16 --keys 1 --run 3:7 --cluster
 ```
 
-## Field Count Distribution
+## Redis Hash field Count Distribution
 
-Each operation uses a weighted field count distribution:
+Each Redis key/value hash uses a weighted field count distribution:
 
 - 35%: 5 fields (about 350 bytes per key)
 - 50%: 10 fields
 - 10%: 20 fields
-- 5%: 100 fields (about 6kB per key)
+- 5%: 100 fields (about 5kB per key if 40 byte per field)
 
 ## Key Format
 
