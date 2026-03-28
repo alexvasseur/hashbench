@@ -10,6 +10,12 @@ Each Redis key/value hash uses a weighted field count distribution:
 - 10%: 20 fields
 - 5%: 100 fields (about 6kB per key)
 
+## Java Lettuce
+
+Please refer to the [lettuce/README.md](lettuce/README.md) for the Java Lettuce CLI client.
+
+Use the Go CLI client for initial fast data loading (the `--load` option is only available in Go CLI client)
+
 
 ## Build
 
@@ -159,4 +165,3 @@ For a read only example with rate limiting
 --cluster \
 --qps 100000
 ```
-
