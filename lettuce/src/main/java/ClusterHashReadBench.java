@@ -257,11 +257,6 @@ public class ClusterHashReadBench {
         if (cfg.cluster) {
             RedisClusterClient clusterClient = RedisClusterClient.create(resources, uris);
 
-            SocketOptions.TcpUserTimeoutOptions tcpUserTimeout = SocketOptions.TcpUserTimeoutOptions.builder()
-                    .tcpUserTimeout(Duration.ofSeconds(20))
-                    .enable()
-                    .build();
-
             SocketOptions.KeepAliveOptions keepAliveOptions = SocketOptions.KeepAliveOptions.builder()
                     .interval(Duration.ofSeconds(5))
                     .idle(Duration.ofSeconds(5))
@@ -269,22 +264,19 @@ public class ClusterHashReadBench {
                     .enable()
                     .build();
 
-            SocketOptions socketOptions = SocketOptions.builder()
-                    .tcpUserTimeout(tcpUserTimeout)
-                    .keepAlive(keepAliveOptions)
-                    .build();
-
             ClusterTopologyRefreshOptions topologyRefreshOptions = ClusterTopologyRefreshOptions.builder()
                     .enableAllAdaptiveRefreshTriggers()
                     .adaptiveRefreshTriggersTimeout(Duration.ofSeconds(30))
                     .build();
 
-            ClusterClientOptions options = ClusterClientOptions.builder()
-                    .topologyRefreshOptions(topologyRefreshOptions)
-                    .socketOptions(socketOptions)
-                    .build();
-
-            clusterClient.setOptions(options);
+            ClusterClientOptions options = buildClusterOptions(topologyRefreshOptions, keepAliveOptions, true);
+            try {
+                clusterClient.setOptions(options);
+            } catch (IllegalStateException e) {
+                ClusterClientOptions fallback = buildClusterOptions(topologyRefreshOptions, keepAliveOptions, false);
+                clusterClient.setOptions(fallback);
+                System.err.println("[WARN] TCP user timeout not supported; continuing without it.");
+            }
             extraCloseables.add(clusterClient);
             for (int i = 0; i < cfg.clients; i++) {
                 StatefulRedisClusterConnection<byte[], byte[]> conn = clusterClient.connect(new ByteArrayCodec());
@@ -703,5 +695,25 @@ public class ClusterHashReadBench {
             c.close();
         } catch (Exception ignored) {
         }
+    }
+
+    static ClusterClientOptions buildClusterOptions(
+            ClusterTopologyRefreshOptions topologyRefreshOptions,
+            SocketOptions.KeepAliveOptions keepAliveOptions,
+            boolean withTcpUserTimeout
+    ) {
+        SocketOptions.Builder socketBuilder = SocketOptions.builder()
+                .keepAlive(keepAliveOptions);
+        if (withTcpUserTimeout) {
+            SocketOptions.TcpUserTimeoutOptions tcpUserTimeout = SocketOptions.TcpUserTimeoutOptions.builder()
+                    .tcpUserTimeout(Duration.ofSeconds(20))
+                    .enable()
+                    .build();
+            socketBuilder.tcpUserTimeout(tcpUserTimeout);
+        }
+        return ClusterClientOptions.builder()
+                .topologyRefreshOptions(topologyRefreshOptions)
+                .socketOptions(socketBuilder.build())
+                .build();
     }
 }

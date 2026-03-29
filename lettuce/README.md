@@ -59,7 +59,7 @@ java \
   -XX:+UnlockExperimentalVMOptions -XX:+UseNUMA \
   -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=15 \
   -XX:ConcGCThreads=4 -XX:ParallelGCThreads=8 \
-  -jar target/hashbench-1.1.0.jar \
+  -jar hashbench-1.1.0.jar \
   $RH \
-  --client 30 --threads 10 --run 3:7 --key-pattern sequential --keys 100000000 --value-bytes 40
+  --client 30 --threads 10 --run 0:3 --key-pattern sequential --keys 100000000 --value-bytes 40
 ```
