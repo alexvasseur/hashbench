@@ -46,6 +46,9 @@ java -jar target/hashbench-1.1.0.jar \
 
 ## Performance (Recommended JVM Flags)
 
+apt install openjdk-21-jre
+
+
 Connection setup
 ```
 export RH="--addr redis-12000.cluster.avasseur-default.demo.redislabs.com:12000 --password XXX --cluster"
