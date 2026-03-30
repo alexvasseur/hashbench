@@ -12,6 +12,7 @@ func baseConfig() Config {
 		LoadOnly:       false,
 		RunRatio:       "",
 		Requests:       DefaultRequests,
+		Conn:           0,
 		QPS:            DefaultQPS,
 		Pipeline:       DefaultPipeline,
 		Seed:           DefaultSeed,

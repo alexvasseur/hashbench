@@ -23,7 +23,7 @@ import (
 	"hashbench/internal/workload"
 )
 
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 func main() {
 	cfg := config.Config{}
@@ -39,6 +39,7 @@ func main() {
 	flag.BoolVar(&cfg.LoadOnly, "load", false, "Load data only (writes only)")
 	flag.StringVar(&cfg.RunRatio, "run", "1:1", "Run mode write:read ratio, e.g. 3:7 (uses HGETALL)")
 	flag.Uint64Var(&cfg.Requests, "requests", config.DefaultRequests, "Total requests to execute (0 = disabled)")
+	flag.IntVar(&cfg.Conn, "conn", 0, "Total extra idle connections to open and ping every 30s")
 	flag.IntVar(&cfg.QPS, "qps", config.DefaultQPS, "Global ops/sec limit (divided per client, 0 = unlimited)")
 	flag.IntVar(&cfg.Pipeline, "pipeline", config.DefaultPipeline, "Pipeline depth")
 	flag.Int64Var(&cfg.Seed, "seed", config.DefaultSeed, "Random seed (0 = time-based)")
@@ -82,57 +83,37 @@ func main() {
 	totalWorkers := cfg.Threads * cfg.Clients
 	fmt.Printf("addr=%s db=%d tls=%v threads=%d client=%d total-workers=%d keys=%d\n", cfg.Addr, cfg.DB, cfg.TLS, cfg.Threads, cfg.Clients, totalWorkers, cfg.Keys)
 	fmt.Printf("value-bytes=%d write-ratio=%.2f load=%v run=%v\n", cfg.ValueBytes, writeRatio, cfg.LoadOnly, runMode)
-	fmt.Printf("requests=%d qps=%d pipeline=%d seed=%d key-pattern=%s\n", cfg.Requests, cfg.QPS, cfg.Pipeline, cfg.Seed, cfg.KeyPattern)
+	fmt.Printf("requests=%d qps=%d conn=%d pipeline=%d seed=%d key-pattern=%s\n", cfg.Requests, cfg.QPS, cfg.Conn, cfg.Pipeline, cfg.Seed, cfg.KeyPattern)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	start := time.Now()
+
 	clients := make([]redis.UniversalClient, 0, cfg.Clients)
-	if cfg.Cluster {
-		addrs := splitAddrs(cfg.Addr)
-		for i := 0; i < cfg.Clients; i++ {
-			opt := &redis.ClusterOptions{
-				Addrs:        addrs,
-				Password:     cfg.Password,
-				PoolSize:     cfg.Threads,
-				MinIdleConns: cfg.Threads,
-				PoolTimeout:  5 * time.Second,
-				DialTimeout:  5 * time.Second,
-				ReadTimeout:  5 * time.Second,
-				WriteTimeout: 5 * time.Second,
-			}
-			if cfg.TLS {
-				opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-			}
-			clients = append(clients, redis.NewClusterClient(opt))
-		}
-	} else {
-		for i := 0; i < cfg.Clients; i++ {
-			opt := &redis.Options{
-				Addr:         cfg.Addr,
-				Password:     cfg.Password,
-				DB:           cfg.DB,
-				PoolSize:     cfg.Threads,
-				MinIdleConns: cfg.Threads,
-				PoolTimeout:  5 * time.Second,
-				DialTimeout:  5 * time.Second,
-				ReadTimeout:  5 * time.Second,
-				WriteTimeout: 5 * time.Second,
-			}
-			if cfg.TLS {
-				opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-			}
-			clients = append(clients, redis.NewClient(opt))
-		}
+	for i := 0; i < cfg.Clients; i++ {
+		clients = append(clients, newClient(cfg, cfg.Threads))
 	}
+	var extraClients []redis.UniversalClient
+	if cfg.Conn > 0 {
+		extraCount := cfg.Conn
+		extraClients = make([]redis.UniversalClient, 0, extraCount)
+		for i := 0; i < extraCount; i++ {
+			extraClients = append(extraClients, newClient(cfg, 1))
+		}
+		startPingLoop(ctx, extraClients, 20*time.Second, start)
+	}
+
 	defer func() {
 		for _, c := range clients {
+			_ = c.Close()
+		}
+		for _, c := range extraClients {
 			_ = c.Close()
 		}
 	}()
 
 	m := metrics.New(200000, 65536)
-	start := time.Now()
 
 	if cfg.ReportInterval > 0 {
 		go m.RunReporter(ctx, cfg.ReportInterval, func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec, errSec, avgMs, p95Ms, p99Ms float64, errorsMsg []string) {
@@ -385,6 +366,76 @@ func splitAddrs(addr string) []string {
 		return []string{addr}
 	}
 	return addrs
+}
+
+func newClient(cfg config.Config, poolSize int) redis.UniversalClient {
+	if cfg.Cluster {
+		addrs := splitAddrs(cfg.Addr)
+		opt := &redis.ClusterOptions{
+			Addrs:        addrs,
+			Password:     cfg.Password,
+			PoolSize:     poolSize,
+			MinIdleConns: poolSize,
+			PoolTimeout:  5 * time.Second,
+			DialTimeout:  5 * time.Second,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+		}
+		if cfg.TLS {
+			opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		return redis.NewClusterClient(opt)
+	}
+
+	opt := &redis.Options{
+		Addr:         cfg.Addr,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     poolSize,
+		MinIdleConns: poolSize,
+		PoolTimeout:  5 * time.Second,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+	if cfg.TLS {
+		opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	return redis.NewClient(opt)
+}
+
+func startPingLoop(ctx context.Context, clients []redis.UniversalClient, interval time.Duration, start time.Time) {
+	if len(clients) == 0 {
+		return
+	}
+	intervalSecs := int(interval.Seconds())
+	if intervalSecs <= 0 {
+		intervalSecs = 20
+	}
+	perTick := (len(clients) + intervalSecs - 1) / intervalSecs
+	if perTick < 1 {
+		perTick = 1
+	}
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		defer ticker.Stop()
+		idx := int(time.Now().UnixNano() % int64(len(clients)))
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for i := 0; i < perTick; i++ {
+					c := clients[idx%len(clients)]
+					if err := c.Ping(ctx).Err(); err != nil {
+						uptime := int(time.Since(start).Seconds())
+						fmt.Fprintf(os.Stderr, "[%03d s] ping error: %v\n", uptime, err)
+					}
+					idx++
+				}
+			}
+		}
+	}()
 }
 
 func pace(ctx context.Context, rate float64, next *int64) bool {

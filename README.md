@@ -101,6 +101,7 @@ The `<id>` is monotonic, so you will have `h5:1` .. `h5:2` but no other `*:1` or
 - `--run` Write:read ratio (e.g. `3:7`, default: `1:1`)
 - `--load` Load data only (writes only)
 - `--qps` Global ops/sec limit (divided evenly per client, `0` disables)
+- `--conn` Total extra idle connections to open and ping every 30s
 - If `--load` is set, the benchmark writes each key once and stops after `--keys` keys (across all threads).
 - `--run` Run mode ratio in `W:R` (e.g. `3:7`), uses `HSET` writes and `HGETALL` reads across the `--keys` keyspace
 - `--requests` Total ops to execute, `0` disables (default: `0`)

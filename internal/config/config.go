@@ -33,6 +33,7 @@ type Config struct {
 	LoadOnly       bool
 	RunRatio       string
 	Requests       uint64
+	Conn           int
 	QPS            int
 	Pipeline       int
 	Seed           int64
@@ -53,6 +54,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ValueBytes <= 0 {
 		return errors.New("value-bytes must be >= 1")
+	}
+	if c.Conn < 0 {
+		return errors.New("conn must be >= 0")
 	}
 	if c.QPS < 0 {
 		return errors.New("qps must be >= 0")
