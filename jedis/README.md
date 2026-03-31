@@ -1,7 +1,13 @@
-# Hashbench (Java Lettuce)
+# Hashbench (Java Jedis)
 
-A lightweight Java benchmark client using Lettuce to run the same `--run` workload and keyspace behavior as the Go `hashbench` tool.
+A single‑file Java benchmark client using Jedis that mirrors the Go `hashbench` `--run` behavior and keyspace.
 It targets Redis Hash read/write mixes with deterministic key shapes.
+
+## NOT FINAL 
+
+Careful this version with Jedis is not fully final yet.
+The pipeline with cluster connection is not optimized.
+
 
 ## Build
 
@@ -12,13 +18,13 @@ mvn -q -DskipTests package
 Output jar:
 
 ```
-target/hashbench.jar
+target/hashbench-<version>.jar
 ```
 
 ## Run (Localhost)
 
 ```bash
-java -jar target/hashbench-1.1.0.jar \
+java -jar target/hashbench-1.2.0.jar \
   --addr 127.0.0.1:6379 \
   --threads 10 \
   --client 30 \
@@ -44,10 +50,22 @@ java -jar target/hashbench-1.1.0.jar \
 - `--key-pattern` `random` or `sequential` (default: `sequential`)
 - `--qps` Global ops/sec limit (divided evenly per client, `0` disables)
 
+## Jedis Pool Note
+
+This client opens **one Jedis connection per client** (no pool) for simplicity and determinism.
+If you want a pool, use `JedisPoolConfig` and tune:
+
+- `maxTotal`
+- `maxIdle`
+- `minIdle`
+- `testOnBorrow`
+- `blockWhenExhausted`
+
+## Performance (Recommended JVM Flags)
+
 ## Performance (Recommended JVM Flags)
 
 apt install openjdk-21-jre
-
 
 Connection setup
 ```
@@ -63,7 +81,7 @@ java \
   -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=15 \
   -XX:ConcGCThreads=4 -XX:ParallelGCThreads=8 \
   -XX:+UnlockDiagnosticVMOptions -XX:+LogVMOutput -XX:LogFile=~/jvm.log \
-  -jar hashbench-1.1.0.jar \
+  -jar hashbench-jedis-1.2.0.jar \
   $RH \
   --client 30 --threads 10 --run 0:3 --key-pattern sequential --keys 1000000000 --value-bytes 40 --pipeline 100
 ```

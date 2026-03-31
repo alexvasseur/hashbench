@@ -1,4 +1,5 @@
 bin/*
 lettuce/target/*
+jedis/target/*
 */.vscode/*
 .DS_Store

@@ -126,3 +126,7 @@ Allowed:
 - The `lettuce` Java client is refactored to match the Go `--run` behavior and options.
 - Supported options mirror Go `--run` (addr/password/tls/cluster/threads/client/keys/value-bytes/run/requests/pipeline/seed/report-interval/key-pattern/qps).
 - `--load` is intentionally not supported in the Java client.
+
+## Java Jedis Client
+- The `jedis` Java client mirrors the Go `--run` behavior and options.
+- It uses one connection per client (no pool by default) for determinism and simplicity.
