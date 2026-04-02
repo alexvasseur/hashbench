@@ -40,7 +40,6 @@ public class ClusterHashReadBench {
         int valueBytes = 16;
         String run = "1:1";  // W:R
         long requests = 0;
-        int pipeline = 1;
         long seed = 0L;
         String reportInterval = "5s";
         String keyPattern = "sequential"; // random|sequential
@@ -83,7 +82,6 @@ public class ClusterHashReadBench {
                     case "value-bytes" -> c.valueBytes = Integer.parseInt(v);
                     case "run" -> c.run = v;
                     case "requests" -> c.requests = Long.parseLong(v);
-                    case "pipeline" -> c.pipeline = Integer.parseInt(v);
                     case "seed" -> c.seed = Long.parseLong(v);
                     case "report-interval" -> c.reportInterval = v;
                     case "key-pattern" -> c.keyPattern = v.toLowerCase(Locale.ROOT);
@@ -100,7 +98,6 @@ public class ClusterHashReadBench {
             if (c.clients <= 0) die("client must be > 0");
             if (c.keys <= 0) die("keys must be > 0");
             if (c.valueBytes <= 0) die("value-bytes must be > 0");
-            if (c.pipeline <= 0) die("pipeline must be >= 1");
             if (c.qps < 0) die("qps must be >= 0");
             if (!c.keyPattern.equals("random") && !c.keyPattern.equals("sequential")) {
                 die("key-pattern must be random or sequential");
@@ -125,7 +122,6 @@ public class ClusterHashReadBench {
                   --value-bytes 16
                   --run 3:7
                   --requests 0
-                  --pipeline 1
                   --seed 0
                   --report-interval 5s
                   --key-pattern random|sequential
@@ -246,8 +242,8 @@ public class ClusterHashReadBench {
         int totalWorkers = cfg.threads * cfg.clients;
         System.out.printf("addr=%s tls=%s cluster=%s threads=%d client=%d total-workers=%d keys=%d\n",
                 cfg.addr, cfg.tls, cfg.cluster, cfg.threads, cfg.clients, totalWorkers, cfg.keys);
-        System.out.printf("value-bytes=%d run=%s requests=%d qps=%d pipeline=%d seed=%d key-pattern=%s\n",
-                cfg.valueBytes, cfg.run, cfg.requests, cfg.qps, cfg.pipeline, cfg.seed, cfg.keyPattern);
+        System.out.printf("value-bytes=%d run=%s requests=%d qps=%d seed=%d key-pattern=%s\n",
+                cfg.valueBytes, cfg.run, cfg.requests, cfg.qps, cfg.seed, cfg.keyPattern);
 
         ClientResources resources = DefaultClientResources.builder().build();
         List<RedisURI> uris = parseRedisUris(cfg);
@@ -381,76 +377,36 @@ public class ClusterHashReadBench {
         long seq = workerId;
 
         while (!stop.get() && !Thread.currentThread().isInterrupted()) {
-            if (cfg.pipeline <= 1) {
-                if (!pace(stop, nextSlot, perClientQps)) {
-                    return;
-                }
-                int keyIdx = nextIndex(cfg, rnd, seq);
-                if (cfg.keyPattern.equals("sequential")) {
-                    seq++;
-                }
-                int fieldCount = fieldCountForIndex(keyIdx);
-                byte[] key = keyFor(fieldCount, keyIdx);
-                boolean isWrite = rnd.nextDouble() < writeRatio;
-
-                if (isWrite) {
-                    Map<byte[], byte[]> map = buildValues(fieldCount, cfg.valueBytes, rnd);
-                    long start = System.nanoTime();
-                    try {
-                        handle.ops.hset(key, map).get();
-                        stats.record(false, System.nanoTime() - start, null);
-                    } catch (Exception e) {
-                        stats.record(false, System.nanoTime() - start, e);
-                    }
-                } else {
-                    long start = System.nanoTime();
-                    try {
-                        handle.ops.hgetall(key).get();
-                        stats.record(true, System.nanoTime() - start, null);
-                    } catch (Exception e) {
-                        stats.record(true, System.nanoTime() - start, e);
-                    }
-                }
-                completed.incrementAndGet();
-            } else {
-                int depth = cfg.pipeline;
-                List<RedisFuture<?>> futures = new ArrayList<>(depth);
-                boolean[] isWrite = new boolean[depth];
-
-                for (int i = 0; i < depth; i++) {
-                    if (!pace(stop, nextSlot, perClientQps)) {
-                        return;
-                    }
-                    int keyIdx = nextIndex(cfg, rnd, seq);
-                    if (cfg.keyPattern.equals("sequential")) {
-                        seq++;
-                    }
-                    int fieldCount = fieldCountForIndex(keyIdx);
-                    byte[] key = keyFor(fieldCount, keyIdx);
-                    boolean write = rnd.nextDouble() < writeRatio;
-                    isWrite[i] = write;
-                    if (write) {
-                        futures.add(handle.ops.hset(key, buildValues(fieldCount, cfg.valueBytes, rnd)));
-                    } else {
-                        futures.add(handle.ops.hgetall(key));
-                    }
-                }
-
-                long start = System.nanoTime();
-                Exception err = null;
-                for (RedisFuture<?> f : futures) {
-                    try {
-                        f.get();
-                    } catch (Exception e) {
-                        err = e;
-                    }
-                }
-                long per = (System.nanoTime() - start) / depth;
-                for (int i = 0; i < depth; i++) {
-                    stats.record(!isWrite[i], per, err);
-                }
-                completed.addAndGet(depth);
+            if (!pace(stop, nextSlot, perClientQps)) {
+                return;
             }
+            int keyIdx = nextIndex(cfg, rnd, seq);
+            if (cfg.keyPattern.equals("sequential")) {
+                seq++;
+            }
+            int fieldCount = fieldCountForIndex(keyIdx);
+            byte[] key = keyFor(fieldCount, keyIdx);
+            boolean isWrite = rnd.nextDouble() < writeRatio;
+
+            if (isWrite) {
+                Map<byte[], byte[]> map = buildValues(fieldCount, cfg.valueBytes, rnd);
+                long start = System.nanoTime();
+                try {
+                    handle.ops.hset(key, map).get();
+                    stats.record(false, System.nanoTime() - start, null);
+                } catch (Exception e) {
+                    stats.record(false, System.nanoTime() - start, e);
+                }
+            } else {
+                long start = System.nanoTime();
+                try {
+                    handle.ops.hgetall(key).get();
+                    stats.record(true, System.nanoTime() - start, null);
+                } catch (Exception e) {
+                    stats.record(true, System.nanoTime() - start, e);
+                }
+            }
+            completed.incrementAndGet();
         }
     }
 
