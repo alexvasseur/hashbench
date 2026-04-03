@@ -150,12 +150,15 @@ Read only example (no pipeline)
 
 (example output with Redis Flex on C4 with 20% RAM/SSD -- your number may be different and those numbers don't reflect any valid performance outcome or best result possible and are for illustration purpose only).
 ...
-elapsed=39m33.608381475s total=537888091 errors=0 error-rate=0.0000
-throughput	226612 ops/s			226612 read/s			0 write/s
-overall		p50=0.561 	0.929 p90	1.189 p95	3.494 p99	5.601 p99.9
-read    	p50=0.560 	0.924 p90	1.174 p95	3.486 p99	5.536 p99.9
-write   	p50=0.000 	0.000 p90	0.000 p95	0.000 p99	0.000 p99.9
-```
+[005 s] 241100 ops   101 slow   48220 o/s   24109 r/s   24111 w/s  1.25 avg  1.20 p50  1.45 p75  1.90 p95  2.32 p99  3.01 p99.9 19.80 p99.99 21.29 slow
+[010 s] 464109 ops     0 slow   44602 o/s   22322 r/s   22280 w/s  1.49 avg  1.49 p50  1.75 p75  2.24 p95  2.55 p99  3.03 p99.9  4.43 p99.99  0.00 slow
+
+Summary
+elapsed=11.796970042s total=555597 errors=101 error-rate=0.0002
+throughput	47097 ops/s			23564 r/s			23533 w/s
+overall		1.220 p50	1.506 p75	1.920 p95	2.236 p99	2.633 p99.9	2.885 p99.99
+read    	1.219 p50	1.507 p75	1.921 p95	2.240 p99	2.624 p99.9	2.937 p99.99
+write   	1.222 p50	1.506 p75	1.920 p95	2.230 p99	2.651 p99.9	2.874 p99.99```
 
 For a read only example with rate limiting
 ```

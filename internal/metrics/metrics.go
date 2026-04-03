@@ -19,10 +19,12 @@ const (
 
 type Percentiles struct {
 	P50  float64 `json:"p50_ms"`
+	P75  float64 `json:"p75_ms"`
 	P90  float64 `json:"p90_ms"`
 	P95  float64 `json:"p95_ms"`
 	P99  float64 `json:"p99_ms"`
 	P999 float64 `json:"p99_9_ms"`
+	P9999 float64 `json:"p99_99_ms"`
 }
 
 type Summary struct {
@@ -97,6 +99,7 @@ type Metrics struct {
 	readOps  uint64
 	writeOps uint64
 	errors   uint64
+	intervalErrors uint64
 
 	lastErr atomic.Value
 	errCh   chan string
@@ -174,13 +177,21 @@ func (m *Metrics) Record(op OpType, latency time.Duration, err error) {
 	case OpWrite:
 		atomic.AddUint64(&m.writeOps, 1)
 	}
+	isErr := false
 	if err != nil && !isIgnorable(err) {
-		atomic.AddUint64(&m.errors, 1)
+		isErr = true
 		m.lastErr.Store(err.Error())
 		select {
 		case m.errCh <- err.Error():
 		default:
 		}
+	}
+	if latency >= 10*time.Millisecond {
+		isErr = true
+	}
+	if isErr {
+		atomic.AddUint64(&m.errors, 1)
+		atomic.AddUint64(&m.intervalErrors, 1)
 	}
 	select {
 	case m.latencyCh <- latencyEvent{op: op, d: latency, in: time.Since(m.start) >= m.warmup}:
@@ -198,10 +209,10 @@ func (m *Metrics) Snapshot() (total, read, write, errors uint64, lastErr string)
 	return
 }
 
-func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, report func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec, errSec float64, avgMs, p95Ms, p99Ms float64, errorsMsg []string)) {
+func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, report func(total, read, write, errors uint64, intervalErrors uint64, opsSec, readOpsSec, writeOpsSec float64, avgMs, p50Ms, p75Ms, p95Ms, p99Ms, p999Ms, p9999Ms, maxErrMs float64, errorsMsg []string)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var lastTotal, lastRead, lastWrite, lastErrors uint64
+	var lastTotal, lastRead, lastWrite uint64
 	var lastTime = time.Now()
 	for {
 		select {
@@ -217,36 +228,42 @@ func (m *Metrics) RunReporter(ctx context.Context, interval time.Duration, repor
 			opsSec := float64(total-lastTotal) / dt
 			readOpsSec := float64(read-lastRead) / dt
 			writeOpsSec := float64(write-lastWrite) / dt
-			errSec := float64(errors-lastErrors) / dt
-			avgMs, p95Ms, p99Ms := m.intervalStats()
+			avgMs, p50Ms, p75Ms, p95Ms, p99Ms, p999Ms, p9999Ms, maxErrMs := m.intervalStats()
+			intervalErrs := atomic.SwapUint64(&m.intervalErrors, 0)
 			errorsMsg := m.drainErrors()
-			report(total, read, write, errors, opsSec, readOpsSec, writeOpsSec, errSec, avgMs, p95Ms, p99Ms, errorsMsg)
+			report(total, read, write, errors, intervalErrs, opsSec, readOpsSec, writeOpsSec, avgMs, p50Ms, p75Ms, p95Ms, p99Ms, p999Ms, p9999Ms, maxErrMs, errorsMsg)
 			lastTotal = total
 			lastRead = read
 			lastWrite = write
-			lastErrors = errors
-			_ = lastErrors
+			_ = errors
 			lastTime = now
 		}
 	}
 }
 
-func (m *Metrics) intervalStats() (avgMs, p95Ms, p99Ms float64) {
+func (m *Metrics) intervalStats() (avgMs, p50Ms, p75Ms, p95Ms, p99Ms, p999Ms, p9999Ms, maxErrMs float64) {
 	m.intervalMu.Lock()
 	samples := m.intervalSamples
 	m.intervalSamples = nil
 	m.intervalMu.Unlock()
 
 	if len(samples) == 0 {
-		return 0, 0, 0
+		return 0, 0, 0, 0, 0, 0, 0, 0
 	}
 	sum := 0.0
+	maxErr := 0.0
 	for _, d := range samples {
-		sum += ms(d)
+		msVal := ms(d)
+		sum += msVal
+		if d >= 10*time.Millisecond {
+			if msVal > maxErr {
+				maxErr = msVal
+			}
+		}
 	}
 	avgMs = sum / float64(len(samples))
 	p := computePercentiles(samples)
-	return avgMs, p.P95, p.P99
+	return avgMs, p.P50, p.P75, p.P95, p.P99, p.P999, p.P9999, maxErr
 }
 
 func (m *Metrics) drainErrors() []string {
@@ -319,10 +336,12 @@ func computePercentiles(samples []time.Duration) Percentiles {
 	}
 	return Percentiles{
 		P50:  get(0.50),
+		P75:  get(0.75),
 		P90:  get(0.90),
 		P95:  get(0.95),
 		P99:  get(0.99),
 		P999: get(0.999),
+		P9999: get(0.9999),
 	}
 }
 

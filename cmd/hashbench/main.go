@@ -23,7 +23,7 @@ import (
 	"hashbench/internal/workload"
 )
 
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 func main() {
 	cfg := config.Config{}
@@ -116,13 +116,27 @@ func main() {
 	m := metrics.New(200000, 65536)
 
 	if cfg.ReportInterval > 0 {
-		go m.RunReporter(ctx, cfg.ReportInterval, func(total, read, write, errors uint64, opsSec, readOpsSec, writeOpsSec, errSec, avgMs, p95Ms, p99Ms float64, errorsMsg []string) {
+		go m.RunReporter(ctx, cfg.ReportInterval, func(total, read, write, errors uint64, intervalErrors uint64, opsSec, readOpsSec, writeOpsSec float64, avgMs, p50Ms, p75Ms, p95Ms, p99Ms, p999Ms, p9999Ms, maxErrMs float64, errorsMsg []string) {
 			uptime := int(time.Since(start).Seconds())
 			opsInt := int64(math.Round(opsSec))
 			readInt := int64(math.Round(readOpsSec))
 			writeInt := int64(math.Round(writeOpsSec))
-			errsInt := int64(math.Round(errSec))
-			fmt.Printf("[%03d s]\t%8d ops/s\t%8d read/s\t%8d write/s\t%6d errors/s\t%7.2f ms avg\t%7.2f ms p95\t%7.2f ms p99\n", uptime, opsInt, readInt, writeInt, errsInt, avgMs, p95Ms, p99Ms)
+			fmt.Printf("[%03d s]%7d ops %5d slow %7d o/s %7d r/s %7d w/s %5.2f avg %5.2f p50 %5.2f p75 %5.2f p95 %5.2f p99 %5.2f p99.9 %5.2f p99.99 %5.2f slow\n",
+				uptime,
+				total,
+				intervalErrors,
+				opsInt,
+				readInt,
+				writeInt,
+				avgMs,
+				p50Ms,
+				p75Ms,
+				p95Ms,
+				p99Ms,
+				p999Ms,
+				p9999Ms,
+				maxErrMs,
+			)
 			for _, msg := range errorsMsg {
 				fmt.Fprintf(os.Stderr, "[%03d s] %s\n", uptime, msg)
 			}
@@ -308,10 +322,10 @@ func main() {
 
 	fmt.Printf("\nSummary\n")
 	fmt.Printf("elapsed=%s total=%d errors=%d error-rate=%.4f\n", elapsed, summary.Count, summary.Errors, summary.ErrorRate)
-	fmt.Printf("throughput	%.0f ops/s			%.0f read/s			%.0f write/s\n", summary.OpsPerSec, summary.ReadOpsSec, summary.WriteOpsSec)
-	fmt.Printf("overall		p50=%.3f 	%.3f p90	%.3f p95	%.3f p99	%.3f p99.9\n", summary.Overall.P50, summary.Overall.P90, summary.Overall.P95, summary.Overall.P99, summary.Overall.P999)
-	fmt.Printf("read    	p50=%.3f 	%.3f p90	%.3f p95	%.3f p99	%.3f p99.9\n", summary.Read.P50, summary.Read.P90, summary.Read.P95, summary.Read.P99, summary.Read.P999)
-	fmt.Printf("write   	p50=%.3f 	%.3f p90	%.3f p95	%.3f p99	%.3f p99.9\n", summary.Write.P50, summary.Write.P90, summary.Write.P95, summary.Write.P99, summary.Write.P999)
+	fmt.Printf("throughput	%.0f ops/s			%.0f r/s			%.0f w/s\n", summary.OpsPerSec, summary.ReadOpsSec, summary.WriteOpsSec)
+	fmt.Printf("overall		%.3f p50	%.3f p75	%.3f p95	%.3f p99	%.3f p99.9	%.3f p99.99\n", summary.Overall.P50, summary.Overall.P75, summary.Overall.P95, summary.Overall.P99, summary.Overall.P999, summary.Overall.P9999)
+	fmt.Printf("read    	%.3f p50	%.3f p75	%.3f p95	%.3f p99	%.3f p99.9	%.3f p99.99\n", summary.Read.P50, summary.Read.P75, summary.Read.P95, summary.Read.P99, summary.Read.P999, summary.Read.P9999)
+	fmt.Printf("write   	%.3f p50	%.3f p75	%.3f p95	%.3f p99	%.3f p99.9	%.3f p99.99\n", summary.Write.P50, summary.Write.P75, summary.Write.P95, summary.Write.P99, summary.Write.P999, summary.Write.P9999)
 	if summary.LastError != "" {
 		fmt.Printf("last_error=%s\n", summary.LastError)
 	}

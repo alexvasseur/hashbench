@@ -160,6 +160,9 @@ public class ClusterHashReadBench {
         final LongAdder readOps = new LongAdder();
         final LongAdder writeOps = new LongAdder();
         final LongAdder errOps = new LongAdder();
+        final LongAdder intervalErrOps = new LongAdder();
+
+        static final long SLOW_ERR_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
         final Reservoir overall = new Reservoir(200_000);
         final Reservoir reads = new Reservoir(200_000);
@@ -186,6 +189,10 @@ public class ClusterHashReadBench {
             }
 
             intervalLatNanos.add(latencyNanos);
+            if (latencyNanos >= SLOW_ERR_NANOS) {
+                errOps.increment();
+                intervalErrOps.increment();
+            }
             if (System.nanoTime() - startNanos >= warmupNanos) {
                 overall.add(latencyNanos);
                 if (isRead) {
@@ -525,6 +532,7 @@ public class ClusterHashReadBench {
             long reads = stats.readOps.sum();
             long writes = stats.writeOps.sum();
             long errs = stats.errOps.sum();
+            long intervalErrs = stats.intervalErrOps.sumThenReset();
 
             long dOps = total - prevOps;
             long dRead = reads - prevRead;
@@ -538,21 +546,33 @@ public class ClusterHashReadBench {
             double errSec = secs > 0 ? dErr / secs : 0.0;
 
             long[] interval = drainLatencies(stats.intervalLatNanos);
+            Arrays.sort(interval);
             double avgMs = interval.length == 0 ? 0.0 : avgMs(interval);
-            double p95 = percentileMs(interval, 0.95);
-            double p99 = percentileMs(interval, 0.99);
+            double p50 = percentileSortedMs(interval, 0.50);
+            double p75 = percentileSortedMs(interval, 0.75);
+            double p95 = percentileSortedMs(interval, 0.95);
+            double p99 = percentileSortedMs(interval, 0.99);
+            double p999 = percentileSortedMs(interval, 0.999);
+            double p9999 = percentileSortedMs(interval, 0.9999);
+            double maxErr = maxAtOrOverMs(interval, Stats.SLOW_ERR_NANOS);
 
             int uptime = (int) ((now - start) / 1_000_000_000L);
             System.out.printf(Locale.ROOT,
-                    "[%03d s]\t%8d ops/s\t%8d read/s\t%8d write/s\t%6d errors/s\t%7.2f ms avg\t%7.2f ms p95\t%7.2f ms p99\n",
+                    "[%03d s]%7d ops %5d slow %7d o/s %7d r/s %7d w/s %5.2f avg %5.2f p50 %5.2f p75 %5.2f p95 %5.2f p99 %5.2f p99.9 %5.2f p99.99 %5.2f slow\n",
                     uptime,
+                    total,
+                    intervalErrs,
                     Math.round(opsSec),
                     Math.round(readSec),
                     Math.round(writeSec),
-                    Math.round(errSec),
                     avgMs,
+                    p50,
+                    p75,
                     p95,
-                    p99
+                    p99,
+                    p999,
+                    p9999,
+                    maxErr
             );
 
             List<String> errsMsg = drainErrors(stats.intervalErrors);
@@ -581,12 +601,12 @@ public class ClusterHashReadBench {
         System.out.println("\nSummary");
         System.out.printf(Locale.ROOT, "total=%d errors=%d error-rate=%.4f%n",
                 total, err, total > 0 ? (double) err / total : 0.0);
-        System.out.printf(Locale.ROOT, "latency_ms overall p50=%.3f p90=%.3f p95=%.3f p99=%.3f p99.9=%.3f%n",
-                percentileMs(all, 0.50), percentileMs(all, 0.90), percentileMs(all, 0.95), percentileMs(all, 0.99), percentileMs(all, 0.999));
-        System.out.printf(Locale.ROOT, "latency_ms read    p50=%.3f p90=%.3f p95=%.3f p99=%.3f p99.9=%.3f%n",
-                percentileMs(r, 0.50), percentileMs(r, 0.90), percentileMs(r, 0.95), percentileMs(r, 0.99), percentileMs(r, 0.999));
-        System.out.printf(Locale.ROOT, "latency_ms write   p50=%.3f p90=%.3f p95=%.3f p99=%.3f p99.9=%.3f%n",
-                percentileMs(w, 0.50), percentileMs(w, 0.90), percentileMs(w, 0.95), percentileMs(w, 0.99), percentileMs(w, 0.999));
+        System.out.printf(Locale.ROOT, "latency overall %.3f p50 %.3f p75 %.3f p95 %.3f p99 %.3f p99.9 %.3f p99.99%n",
+                percentileMs(all, 0.50), percentileMs(all, 0.75), percentileMs(all, 0.95), percentileMs(all, 0.99), percentileMs(all, 0.999), percentileMs(all, 0.9999));
+        System.out.printf(Locale.ROOT, "latency read    %.3f p50 %.3f p75 %.3f p95 %.3f p99 %.3f p99.9 %.3f p99.99%n",
+                percentileMs(r, 0.50), percentileMs(r, 0.75), percentileMs(r, 0.95), percentileMs(r, 0.99), percentileMs(r, 0.999), percentileMs(r, 0.9999));
+        System.out.printf(Locale.ROOT, "latency write   %.3f p50 %.3f p75 %.3f p95 %.3f p99 %.3f p99.9 %.3f p99.99%n",
+                percentileMs(w, 0.50), percentileMs(w, 0.75), percentileMs(w, 0.95), percentileMs(w, 0.99), percentileMs(w, 0.999), percentileMs(w, 0.9999));
     }
 
     static long[] drainLatencies(ConcurrentLinkedQueue<Long> q) {
@@ -621,10 +641,26 @@ public class ClusterHashReadBench {
     static double percentileMs(long[] nanos, double p) {
         if (nanos.length == 0) return 0.0;
         Arrays.sort(nanos);
-        int idx = (int) Math.ceil(p * nanos.length) - 1;
+        return percentileSortedMs(nanos, p);
+    }
+
+    static double percentileSortedMs(long[] sorted, double p) {
+        if (sorted.length == 0) return 0.0;
+        int idx = (int) Math.ceil(p * sorted.length) - 1;
         if (idx < 0) idx = 0;
-        if (idx >= nanos.length) idx = nanos.length - 1;
-        return nanos[idx] / 1_000_000.0;
+        if (idx >= sorted.length) idx = sorted.length - 1;
+        return sorted[idx] / 1_000_000.0;
+    }
+
+    static double maxAtOrOverMs(long[] sorted, long thresholdNanos) {
+        double max = 0.0;
+        for (int i = sorted.length - 1; i >= 0; i--) {
+            if (sorted[i] >= thresholdNanos) {
+                max = sorted[i] / 1_000_000.0;
+                break;
+            }
+        }
+        return max;
     }
 
     static String rootMessage(Throwable t) {

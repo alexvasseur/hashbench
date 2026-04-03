@@ -9,6 +9,7 @@ Careful this version with Jedis is not fully final yet.
 The pipeline with cluster connection is not optimized.
 
 
+
 ## Build
 
 ```bash
@@ -80,7 +81,7 @@ java \
   -XX:+UnlockExperimentalVMOptions -XX:+UseNUMA \
   -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=15 \
   -XX:ConcGCThreads=4 -XX:ParallelGCThreads=8 \
-  -XX:+UnlockDiagnosticVMOptions -XX:+LogVMOutput -XX:LogFile=~/jvm.log \
+  -XX:+UnlockDiagnosticVMOptions -XX:+LogVMOutput -XX:LogFile=jvm.log \
   -jar hashbench-jedis-1.2.0.jar \
   $RH \
   --client 30 --threads 10 --run 0:3 --key-pattern sequential --keys 1000000000 --value-bytes 40 --pipeline 100
