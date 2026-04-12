@@ -44,6 +44,7 @@ java -jar target/hashbench-1.2.0.jar \
 - `--keys` Number of keys (default: `10000`)
 - `--value-bytes` Value size in bytes (default: `16`)
 - `--run` Write:read ratio (e.g. `3:7`, default: `1:1`)
+- `--load` Only load all keys (exactly once, flag only)
 - `--requests` Total ops to execute, `0` disables (default: `0`)
 - `--pipeline` Pipeline depth (default: `1`)
 - `--seed` RNG seed, `0` uses time-based seed (default: `0`)
@@ -82,7 +83,7 @@ java \
   -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=15 \
   -XX:ConcGCThreads=4 -XX:ParallelGCThreads=8 \
   -XX:+UnlockDiagnosticVMOptions -XX:+LogVMOutput -XX:LogFile=jvm.log \
-  -jar hashbench-jedis-1.2.0.jar \
+  -jar hashbench-jedis-1.4.0.jar \
   $RH \
   --client 30 --threads 10 --run 0:3 --key-pattern sequential --keys 1000000000 --value-bytes 40 --pipeline 100
 ```

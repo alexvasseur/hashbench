@@ -22,6 +22,8 @@ public class JedisHashBench {
         int keys = 10000;
         int valueBytes = 16;
         String run = "1:1";  // W:R
+        boolean loadOnly = false;
+        boolean runProvided = false;
         long requests = 0;
         int pipeline = 1;
         long seed = 0L;
@@ -46,7 +48,7 @@ public class JedisHashBench {
                     v = arg.substring(eq + 1);
                 } else {
                     k = arg.substring(2);
-                    if (!k.equals("cluster") && !k.equals("help")) {
+                    if (!k.equals("cluster") && !k.equals("help") && !k.equals("load")) {
                         if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
                             System.err.println("Missing value for --" + k);
                             usageAndExit(1);
@@ -64,7 +66,11 @@ public class JedisHashBench {
                     case "client" -> c.clients = Integer.parseInt(v);
                     case "keys" -> c.keys = Integer.parseInt(v);
                     case "value-bytes" -> c.valueBytes = Integer.parseInt(v);
-                    case "run" -> c.run = v;
+                    case "run" -> {
+                        c.run = v;
+                        c.runProvided = true;
+                    }
+                    case "load" -> c.loadOnly = true;
                     case "requests" -> c.requests = Long.parseLong(v);
                     case "pipeline" -> c.pipeline = Integer.parseInt(v);
                     case "seed" -> c.seed = Long.parseLong(v);
@@ -107,6 +113,7 @@ public class JedisHashBench {
                   --keys 10000
                   --value-bytes 16
                   --run 3:7
+                  --load
                   --requests 0
                   --pipeline 1
                   --seed 0
@@ -288,14 +295,23 @@ public class JedisHashBench {
     public static void main(String[] args) throws Exception {
         Config cfg = Config.parse(args);
 
+        if (cfg.loadOnly && cfg.runProvided) {
+            System.err.println("config error: --load and --run are mutually exclusive");
+            System.exit(1);
+        }
+
         double writeRatio = parseRun(cfg.run);
+        if (cfg.loadOnly) {
+            writeRatio = 1.0;
+        }
+        final double writeRatioFinal = writeRatio;
 
         System.out.printf("Redis Hash Bench (Java Jedis)\n");
         int totalWorkers = cfg.threads * cfg.clients;
         System.out.printf("addr=%s tls=%s cluster=%s threads=%d client=%d total-workers=%d keys=%d\n",
                 cfg.addr, cfg.tls, cfg.cluster, cfg.threads, cfg.clients, totalWorkers, cfg.keys);
-        System.out.printf("value-bytes=%d run=%s requests=%d qps=%d pipeline=%d seed=%d key-pattern=%s\n",
-                cfg.valueBytes, cfg.run, cfg.requests, cfg.qps, cfg.pipeline, cfg.seed, cfg.keyPattern);
+        System.out.printf("value-bytes=%d run=%s load=%s requests=%d qps=%d pipeline=%d seed=%d key-pattern=%s\n",
+                cfg.valueBytes, cfg.run, cfg.loadOnly, cfg.requests, cfg.qps, cfg.pipeline, cfg.seed, cfg.keyPattern);
 
         List<Ops> clients = new ArrayList<>(cfg.clients);
         JedisClientConfig clientConfig = buildClientConfig(cfg);
@@ -322,6 +338,8 @@ public class JedisHashBench {
         Stats stats = new Stats();
         AtomicBoolean stop = new AtomicBoolean(false);
         AtomicLong completed = new AtomicLong(0);
+        AtomicLong nextLoadIdx = new AtomicLong(0);
+        AtomicBoolean loadDone = new AtomicBoolean(false);
 
         long perClientQps = cfg.qps > 0 ? Math.max(1, Math.round((double) cfg.qps / cfg.clients)) : 0;
         AtomicLong[] nextSlots = new AtomicLong[cfg.clients];
@@ -349,21 +367,27 @@ public class JedisHashBench {
             int workerId = i;
             int clientIdx = workerId % cfg.clients;
             Ops handle = clients.get(clientIdx);
-            workers.submit(() -> runWorker(workerId, cfg, handle, stats, stop, completed, writeRatio, nextSlots[clientIdx], perClientQps));
+            workers.submit(() -> runWorker(workerId, cfg, handle, stats, stop, completed, writeRatioFinal, nextSlots[clientIdx], perClientQps, nextLoadIdx, loadDone));
         }
 
         while (!stop.get()) {
-            if (cfg.requests > 0 && completed.get() >= cfg.requests) {
+            if (cfg.loadOnly && loadDone.get()) {
                 stop.set(true);
-                workers.shutdown();
-                reporter.shutdown();
+            }
+            if (!cfg.loadOnly && cfg.requests > 0 && completed.get() >= cfg.requests) {
+                stop.set(true);
+            }
+            if (stop.get()) {
+                workers.shutdownNow();
+                reporter.shutdownNow();
                 break;
             }
             Thread.sleep(200);
         }
 
-        workers.awaitTermination(30, TimeUnit.SECONDS);
+        workers.shutdownNow();
         reporter.shutdownNow();
+        workers.awaitTermination(30, TimeUnit.SECONDS);
         printSummary(stats);
         closeQuietlyAll(clients);
         closeQuietly(sharedCluster[0]);
@@ -379,7 +403,9 @@ public class JedisHashBench {
             AtomicLong completed,
             double writeRatio,
             AtomicLong nextSlot,
-            long perClientQps
+            long perClientQps,
+            AtomicLong nextLoadIdx,
+            AtomicBoolean loadDone
     ) {
         long baseSeed = cfg.seed != 0 ? cfg.seed : System.nanoTime();
         Random rnd = new Random(baseSeed + (workerId * 9973L));
@@ -387,16 +413,30 @@ public class JedisHashBench {
 
         while (!stop.get() && !Thread.currentThread().isInterrupted()) {
             if (cfg.pipeline <= 1) {
-                if (!pace(stop, nextSlot, perClientQps)) {
+            if (!pace(stop, nextSlot, perClientQps)) {
+                return;
+            }
+            int keyIdx;
+            if (cfg.loadOnly) {
+                long idx = nextLoadIdx.getAndIncrement();
+                if (idx >= cfg.keys) {
+                    if (loadDone.compareAndSet(false, true)) {
+                        int uptime = (int) ((System.nanoTime() - stats.startNanos) / 1_000_000_000L);
+                        System.out.printf("[%03d s] load complete: keys=%d%n", uptime, cfg.keys);
+                    }
+                    stop.set(true);
                     return;
                 }
-                int keyIdx = nextIndex(cfg, rnd, seq);
+                keyIdx = (int) idx;
+            } else {
+                keyIdx = nextIndex(cfg, rnd, seq);
                 if (cfg.keyPattern.equals("sequential")) {
                     seq++;
                 }
-                int fieldCount = fieldCountForIndex(keyIdx);
-                byte[] key = keyFor(fieldCount, keyIdx);
-                boolean isWrite = rnd.nextDouble() < writeRatio;
+            }
+            int fieldCount = fieldCountForIndex(keyIdx);
+            byte[] key = keyFor(fieldCount, keyIdx);
+            boolean isWrite = cfg.loadOnly || rnd.nextDouble() < writeRatio;
 
                 if (isWrite) {
                     Map<byte[], byte[]> map = buildValues(fieldCount, cfg.valueBytes, rnd);
@@ -430,13 +470,28 @@ public class JedisHashBench {
                             p.close();
                             return;
                         }
-                        int keyIdx = nextIndex(cfg, rnd, seq);
-                        if (cfg.keyPattern.equals("sequential")) {
-                            seq++;
+                        int keyIdx;
+                        if (cfg.loadOnly) {
+                            long idx = nextLoadIdx.getAndIncrement();
+                            if (idx >= cfg.keys) {
+                                if (loadDone.compareAndSet(false, true)) {
+                                    int uptime = (int) ((System.nanoTime() - stats.startNanos) / 1_000_000_000L);
+                                    System.out.printf("[%03d s] load complete: keys=%d%n", uptime, cfg.keys);
+                                }
+                                stop.set(true);
+                                p.close();
+                                return;
+                            }
+                            keyIdx = (int) idx;
+                        } else {
+                            keyIdx = nextIndex(cfg, rnd, seq);
+                            if (cfg.keyPattern.equals("sequential")) {
+                                seq++;
+                            }
                         }
                         int fieldCount = fieldCountForIndex(keyIdx);
                         byte[] key = keyFor(fieldCount, keyIdx);
-                        boolean write = rnd.nextDouble() < writeRatio;
+                        boolean write = cfg.loadOnly || rnd.nextDouble() < writeRatio;
                         isWrite[i] = write;
                         if (write) {
                             p.hset(key, buildValues(fieldCount, cfg.valueBytes, rnd));
@@ -459,13 +514,27 @@ public class JedisHashBench {
                         if (!pace(stop, nextSlot, perClientQps)) {
                             return;
                         }
-                        int keyIdx = nextIndex(cfg, rnd, seq);
-                        if (cfg.keyPattern.equals("sequential")) {
-                            seq++;
+                        int keyIdx;
+                        if (cfg.loadOnly) {
+                            long idx = nextLoadIdx.getAndIncrement();
+                            if (idx >= cfg.keys) {
+                                if (loadDone.compareAndSet(false, true)) {
+                                    int uptime = (int) ((System.nanoTime() - stats.startNanos) / 1_000_000_000L);
+                                    System.out.printf("[%03d s] load complete: keys=%d%n", uptime, cfg.keys);
+                                }
+                                stop.set(true);
+                                return;
+                            }
+                            keyIdx = (int) idx;
+                        } else {
+                            keyIdx = nextIndex(cfg, rnd, seq);
+                            if (cfg.keyPattern.equals("sequential")) {
+                                seq++;
+                            }
                         }
                         int fieldCount = fieldCountForIndex(keyIdx);
                         byte[] key = keyFor(fieldCount, keyIdx);
-                        boolean write = rnd.nextDouble() < writeRatio;
+                        boolean write = cfg.loadOnly || rnd.nextDouble() < writeRatio;
                         isWrite[i] = write;
                         if (write) {
                             p.hset(key, buildValues(fieldCount, cfg.valueBytes, rnd));
@@ -690,7 +759,7 @@ public class JedisHashBench {
 
             int uptime = (int) ((now - start) / 1_000_000_000L);
             System.out.printf(Locale.ROOT,
-                    "[%03d s]%7d ops %5d slow %7d o/s %7d r/s %7d w/s %5.2f avg %5.2f p50 %5.2f p75 %5.2f p95 %5.2f p99 %5.2f p99.9 %5.2f p99.99 %5.2f slow\n",
+                    "[%03d s]%7d ops %5d slow %7d o/s %7d r/s %7d w/s %5.2f avg %5.2f p50 %5.2f p75 %5.2f p95 %5.2f p99 %6.2f p99.9 %6.2f p99.99 %6.2f slow\n",
                     uptime,
                     total,
                     intervalErrs,
